@@ -141,6 +141,7 @@ There are a number of different values which can be set for the `RUN_MODE` envir
 | 2             | Scale up and cordon the outdated nodes of all ASGs all at once at the beginning of the run.     |
 | 3             | Cordon the outdated nodes of all ASGs at the beginning of the run but scale each ASG one-by-one.|
 | 4             | Roll EKS nodes based on age instead of launch config (works with `MAX_ALLOWABLE_NODE_AGE` with default 6 days value). |
+| 5             | Scale up and cordon, drain and delete the outdated nodes of each ASG one-by-one.   |
 
 
 Each of them have different advantages and disadvantages.
