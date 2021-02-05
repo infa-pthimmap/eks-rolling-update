@@ -187,12 +187,13 @@ def update_asgs(asgs, cluster_name):
         outdated_instances, asg = asg_tuple
         outdated_instance_count = len(outdated_instances)
 
-        if (run_mode == 1) or (run_mode == 3) or (run_mode == 4):
+        if (run_mode == 1) or (run_mode == 3) or (run_mode == 4) or (run_mode == 5):
             logger.info(
                 f'Setting the scale of ASG {asg_name} based on {outdated_instance_count} outdated instances.')
             asg_state_dict[asg_name] = scale_up_asg(cluster_name, asg, outdated_instance_count)
 
-        if (run_mode == 1) or (run_mode == 4):
+        if (run_mode == 1) or (run_mode == 4) or (run_mode == 5):
+            desired_asg_capacity = asg_state_dict[asg_name][0]
             for outdated in outdated_instances:
                 node_name = ""
                 try:
@@ -202,6 +203,8 @@ def update_asgs(asgs, cluster_name):
                         cordon_node(node_name)
                     else:
                         taint_node(node_name)
+                    if run_mode == 5:
+                        drain_delete_nodes(outdated,  desired_asg_capacity, asg_name, k8s_nodes, use_asg_termination_policy)
                 except Exception as exception:
                     logger.error(f"Encountered an error when adding taint/cordoning node {node_name}")
                     logger.error(exception)
@@ -213,30 +216,10 @@ def update_asgs(asgs, cluster_name):
             if not use_asg_termination_policy:
                 modify_aws_autoscaling(asg_name, "suspend")
 
-        # start draining and terminating
-        desired_asg_capacity = asg_state_dict[asg_name][0]
-        for outdated in outdated_instances:
-            # catch any failures so we can resume aws autoscaling
-            try:
-                # get the k8s node name instead of instance id
-                node_name = get_node_by_instance_id(k8s_nodes, outdated['InstanceId'])
-                desired_asg_capacity -= 1
-                drain_node(node_name)
-                delete_node(node_name)
-                save_asg_tags(asg_name, app_config["ASG_DESIRED_STATE_TAG"], desired_asg_capacity)
-                # terminate/detach outdated instances only if ASG termination policy is ignored
-                if not use_asg_termination_policy:
-                    terminate_instance_in_asg(outdated['InstanceId'])
-                    if not instance_terminated(outdated['InstanceId']):
-                        raise Exception('Instance is failing to terminate. Cancelling out.')
-
-                    between_nodes_wait = app_config['BETWEEN_NODES_WAIT']
-                    if between_nodes_wait != 0:
-                        logger.info(f'Waiting for {between_nodes_wait} seconds before continuing...')
-                        time.sleep(between_nodes_wait)
-            except Exception as drain_exception:
-                logger.info(drain_exception)
-                raise RollingUpdateException("Rolling update on ASG failed", asg_name)
+        if run_mode != 5:
+            desired_asg_capacity = asg_state_dict[asg_name][0]
+            for outdated in outdated_instances:
+                drain_delete_nodes(outdated,  desired_asg_capacity, asg_name, k8s_nodes, use_asg_termination_policy)
 
         # scaling cluster back down
         logger.info("Scaling asg back down to original state")
@@ -252,6 +235,29 @@ def update_asgs(asgs, cluster_name):
         logger.info(f'*** Rolling update of asg {asg_name} is complete! ***')
     logger.info('All asgs processed')
 
+
+def drain_delete_nodes(outdated, desired_asg_capacity, asg_name, k8s_nodes, use_asg_termination_policy):
+    # catch any failures so we can resume aws autoscaling
+    try:
+        # get the k8s node name instead of instance id
+        node_name = get_node_by_instance_id(k8s_nodes, outdated['InstanceId'])
+        desired_asg_capacity -= 1
+        drain_node(node_name)
+        delete_node(node_name)
+        save_asg_tags(asg_name, app_config["ASG_DESIRED_STATE_TAG"], desired_asg_capacity)
+        # terminate/detach outdated instances only if ASG termination policy is ignored
+        if not use_asg_termination_policy:
+            terminate_instance_in_asg(outdated['InstanceId'])
+            if not instance_terminated(outdated['InstanceId']):
+                raise Exception('Instance is failing to terminate. Cancelling out.')
+
+            between_nodes_wait = app_config['BETWEEN_NODES_WAIT']
+            if between_nodes_wait != 0:
+                logger.info(f'Waiting for {between_nodes_wait} seconds before continuing...')
+                time.sleep(between_nodes_wait)
+    except Exception as drain_exception:
+        logger.info(drain_exception)
+        raise RollingUpdateException("Rolling update on ASG failed", asg_name)
 
 def main(args=None):
     parser = argparse.ArgumentParser(description='Rolling update on cluster')
